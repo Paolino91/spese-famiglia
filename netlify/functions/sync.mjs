@@ -75,10 +75,19 @@ function sfMerge(a, b) {
 }
 
 
-const json = (obj, status = 200) =>
+// l'app puo' essere aperta anche dalla copia su GitHub Pages
+const ALLOWED_ORIGINS = ["https://paolino91.github.io"];
+const corsFor = (req) => {
+  const o = req.headers.get("origin") || "";
+  return ALLOWED_ORIGINS.includes(o)
+    ? { "access-control-allow-origin": o, "access-control-allow-methods": "GET, POST, OPTIONS",
+        "access-control-allow-headers": "content-type, x-family-key", "access-control-max-age": "86400", vary: "Origin" }
+    : {};
+};
+const reply = (obj, status, cors) =>
   new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: { "content-type": "application/json", "cache-control": "no-store", ...cors },
   });
 
 const sameKey = (a, b) => {
@@ -88,6 +97,9 @@ const sameKey = (a, b) => {
 };
 
 export default async (req) => {
+  const cors = corsFor(req);
+  const json = (obj, status = 200) => reply(obj, status, cors);
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   const expected = process.env.FAMILY_KEY || "";
   if (!expected) return json({ error: "FAMILY_KEY non configurata sul server" }, 500);
   const given = req.headers.get("x-family-key") || "";

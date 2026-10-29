@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <style>html,body{margin:0;height:100%;background:#F8F5FC;overscroll-behavior:none;}</style>
-<script>window.__resources = {"https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js", "https://unpkg.com/@babel/standalone@7.29.0/babel.min.js": "assets/babel.min.js"}; window.__APP_VERSION = "v1";</script>
+<script>window.__resources = {"https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js", "https://unpkg.com/@babel/standalone@7.29.0/babel.min.js": "assets/babel.min.js"}; window.__APP_VERSION = "v2";</script>
 <script src="assets/merge.js"></script>
 <script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){});});}</script>
 
@@ -936,7 +936,7 @@ var LZString=function(){var r=String.fromCharCode,o="ABCDEFGHIJKLMNOPQRSTUVWXYZa
 class Component extends DCLogic {
   KEY = 'spesefam.v1';
   CLOUD_KEY = 'spesefam.cloud';
-  API = 'api/sync';
+  API = (typeof window!=='undefined' && window.SPESEFAM_API) || (/github\.io$/.test(location.hostname) ? 'https://spese-famiglia-darrisco.netlify.app/api/sync' : 'api/sync');
   PREFIX = 'SPESEFAM1:';
   PREFIX2 = 'SPESEFAM2:';
 
@@ -1031,8 +1031,7 @@ class Component extends DCLogic {
     try{
       const r=await fetch(this.API,{method:'POST', cache:'no-store', headers:{'content-type':'application/json','x-family-key':key}, body:JSON.stringify({data:this.sharedPayload(this.state.data)})});
       let body=null; try{ body=await r.json(); }catch(e){}
-      if(r.status===404){ throw new Error('Cloud non disponibile a questo indirizzo: apri l\'app dal link Netlify.'); }
-      if(!r.ok){ throw new Error((body&&body.error)||('Errore server '+r.status)); }
+      if(r.status===404){ throw new Error('Servizio cloud non raggiungibile (404).'); }      if(!r.ok){ throw new Error((body&&body.error)||('Errore server '+r.status)); }
       const cur=this.state.data;
       const m=window.sfMerge(this.sharedPayload(cur), body.data||{});
       const settings=Object.assign({}, cur.settings||{}, m.settings, {device:(cur.settings||{}).device});
@@ -1263,8 +1262,14 @@ class Component extends DCLogic {
     try{ return this.PREFIX + btoa(unescape(encodeURIComponent(JSON.stringify(payload)))); }
     catch(e){ return this.PREFIX; }
   }
+  normalizeCode(text){
+    let t=String(text||'');
+    if(/%[0-9A-Fa-f]{2}/.test(t)){ try{ t=decodeURIComponent(t.replace(/%(?![0-9A-Fa-f]{2})/g,'%25')); }catch(e){} }
+    return t.replace(/spesefam2\s*:/i,'SPESEFAM2:').replace(/spesefam1\s*:/i,'SPESEFAM1:');
+  }
   decodePayload(text){
     if(!text) return null;
+    text=this.normalizeCode(text);
     const i2=text.indexOf(this.PREFIX2);
     if(i2>=0){
       const z=text.slice(i2+this.PREFIX2.length).replace(/[^A-Za-z0-9+/=]/g,'');
@@ -1331,7 +1336,7 @@ class Component extends DCLogic {
     }
   }
   mergeText(){
-    const raw=this.state.syncIn||'';
+    const raw=this.normalizeCode(this.state.syncIn||'');
     const p=this.decodePayload(raw);
     if(!p || !p.expenses){
       let pfx=this.PREFIX2, idx=raw.indexOf(pfx);

@@ -1,5 +1,5 @@
 // Service worker: l'app si apre anche senza rete e si aggiorna da sola.
-const CACHE = 'spesefam-v1';
+const CACHE = 'spesefam-v2';
 const CORE = ['./', './assets/merge.js', './assets/dc-runtime.js', './assets/react.production.min.js',
   './assets/react-dom.production.min.js', './assets/babel.min.js', './assets/material-symbols-rounded.woff2',
   './assets/jakarta-latin.woff2', './assets/jakarta-latinext.woff2', './manifest.webmanifest', './icons/apple-touch-icon.png'];
