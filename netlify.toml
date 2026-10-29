@@ -1,6 +1,9 @@
 [build]
   publish = "."
   command = "echo nessuna build necessaria"
+  # Risparmio crediti: Netlify ripubblica SOLO se cambia la parte server (sincronizzazione).
+  # Le modifiche all'app (grafica, testi) vanno online da GitHub Pages senza consumare crediti.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- netlify/ netlify.toml package.json"
 
 [functions]
   directory = "netlify/functions"

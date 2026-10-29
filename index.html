@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <style>html,body{margin:0;height:100%;background:#F8F5FC;overscroll-behavior:none;}</style>
-<script>window.__resources = {"https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js", "https://unpkg.com/@babel/standalone@7.29.0/babel.min.js": "assets/babel.min.js"}; window.__APP_VERSION = "v2";</script>
+<script>window.__resources = {"https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js", "https://unpkg.com/@babel/standalone@7.29.0/babel.min.js": "assets/babel.min.js"}; window.__APP_VERSION = "v3";</script>
 <script src="assets/merge.js"></script>
 <script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){});});}</script>
 
@@ -1010,35 +1010,65 @@ class Component extends DCLogic {
     return null;
   }
   save(d){ try{ localStorage.setItem(this.KEY, JSON.stringify(d)); }catch(e){} }
-  persist(data, extra){ this.save(data); this.setState(Object.assign({data}, extra||{})); this.dirty=(this.dirty||0)+1; this.scheduleCloud(1200); }
+  persist(data, extra){
+    try{ const ks=window.SFDelta.changedKeys(this.state.data, data); if(ks.length) this.markDirty(ks); }catch(e){}
+    this.save(data); this.setState(Object.assign({data}, extra||{}));
+    this.scheduleCloud(1500);
+  }
 
-  // ---------- cloud (Netlify) ----------
+  // ---------- cloud (Netlify) · sincronizzazione differenziale ----------
+  // si inviano solo le voci cambiate e si ricevono solo quelle nuove (revisione "rev")
+  SYNC_KEY = 'spesefam.sync';
   loadCloudKey(){ try{ return localStorage.getItem(this.CLOUD_KEY)||''; }catch(e){ return ''; } }
   saveCloudKey(k){ try{ if(k) localStorage.setItem(this.CLOUD_KEY,k); else localStorage.removeItem(this.CLOUD_KEY); }catch(e){} }
-  sharedPayload(d){
-    const s=d.settings||{};
-    return { expenses:d.expenses||[], deleted:d.deleted||{}, settings:{ budget:s.budget, budgetU:s.budgetU||0, limits:s.limits||{}, limitsU:s.limitsU||{}, customCats:s.customCats||[], recurring:s.recurring||[] } };
+  syncMeta(){
+    if(!this._meta){ let m=null; try{ m=JSON.parse(localStorage.getItem(this.SYNC_KEY)||'null'); }catch(e){}
+      this._meta=(m&&typeof m==='object')?{rev:m.rev|0, dirty:Array.isArray(m.dirty)?m.dirty:[], init:!!m.init}:{rev:0, dirty:[], init:false}; }
+    return this._meta;
   }
+  saveMeta(){ try{ localStorage.setItem(this.SYNC_KEY, JSON.stringify(this._meta)); }catch(e){} }
+  markDirty(keys){ const m=this.syncMeta(); const set=new Set(m.dirty); keys.forEach(k=>set.add(k)); m.dirty=[...set]; this.saveMeta(); }
   scheduleCloud(ms){
     if(!this.state || !this.state.cloudKey) return;
     clearTimeout(this.cloudTimer); this.cloudTimer=setTimeout(()=>this.cloudSync(), ms||0);
+  }
+  // sincronizzazione "di cortesia" (apertura, ritorno in primo piano, intervallo): salta se fatta da poco e non c'e' nulla da inviare
+  softSync(minGapMs){
+    const m=this.syncMeta();
+    if(!m.dirty.length && this.lastOkAt && Date.now()-this.lastOkAt < (minGapMs||15000)) return;
+    this.scheduleCloud(0);
   }
   async cloudSync(keyOverride){
     const key=keyOverride||this.state.cloudKey; if(!key) return false;
     if(this.cloudRunning){ this.cloudAgain=true; return false; }
     this.cloudRunning=true; this.setState({cloudBusy:true});
-    const sentDirty=this.dirty||0;
+    const D=window.SFDelta, m=this.syncMeta();
+    // primo collegamento di questo telefono: si inviano una sola volta tutte le voci locali
+    if(!m.init){ m.dirty=Object.keys(D.toEntries(this.state.data)); m.rev=0; m.init=true; this.saveMeta(); }
+    const cur0=D.toEntries(this.state.data);
+    const ops=m.dirty.filter(k=>cur0[k]).map(k=>[k, cur0[k].v, cur0[k].u]);
+    const sent={}; ops.forEach(o=>{ sent[o[0]]=JSON.stringify([o[1],o[2]]); });
     try{
-      const r=await fetch(this.API,{method:'POST', cache:'no-store', headers:{'content-type':'application/json','x-family-key':key}, body:JSON.stringify({data:this.sharedPayload(this.state.data)})});
+      // richiesta "semplice" (testo): nessuna richiesta preliminare CORS, quindi meta' delle chiamate
+      const r=await fetch(this.API,{method:'POST', cache:'no-store', headers:{'content-type':'text/plain;charset=UTF-8'}, body:JSON.stringify({k:key, since:m.rev, ops})});
       let body=null; try{ body=await r.json(); }catch(e){}
-      if(r.status===404){ throw new Error('Servizio cloud non raggiungibile (404).'); }      if(!r.ok){ throw new Error((body&&body.error)||('Errore server '+r.status)); }
-      const cur=this.state.data;
-      const m=window.sfMerge(this.sharedPayload(cur), body.data||{});
-      const settings=Object.assign({}, cur.settings||{}, m.settings, {device:(cur.settings||{}).device});
-      const next=Object.assign({}, cur, {expenses:m.expenses, deleted:m.deleted, settings, lastSync:Date.now()});
-      this.save(next);
+      if(r.status===404){ throw new Error('Servizio cloud non raggiungibile (404).'); }
+      if(!r.ok){ throw new Error((body&&body.error)||('Errore server '+r.status)); }
+      // voci inviate e rimaste invariate nel frattempo: non sono piu' da inviare
+      const curNow=D.toEntries(this.state.data);
+      m.dirty=m.dirty.filter(k=> !!curNow[k] && (!(k in sent) || JSON.stringify([curNow[k].v,curNow[k].u])!==sent[k]));
+      if(body.reset){ m.dirty=Object.keys(curNow); m.rev=0; this.saveMeta(); this.cloudAgain=true; }
+      else m.rev=body.rev|0;
+      let next=this.state.data;
+      if(Array.isArray(body.ch) && body.ch.length){
+        const map={}; body.ch.forEach(c=>{ map[c[0]]={v:c[1], u:c[2]||0}; });
+        next=D.applyEntries(next, map);
+        next.settings=Object.assign({}, next.settings, {device:(this.state.data.settings||{}).device});
+      }
+      next=Object.assign({}, next, {lastSync:Date.now()});
+      this.saveMeta(); this.save(next); this.lastOkAt=Date.now();
       this.setState({data:next, cloudBusy:false, cloudError:'', cloudOk:Date.now()});
-      if((this.dirty||0)!==sentDirty) this.cloudAgain=true;
+      if(m.dirty.length) this.cloudAgain=true;
       return true;
     }catch(e){
       const offline=(typeof navigator!=='undefined' && navigator.onLine===false);
@@ -1046,18 +1076,20 @@ class Component extends DCLogic {
       return false;
     }finally{
       this.cloudRunning=false;
-      if(this.cloudAgain){ this.cloudAgain=false; this.scheduleCloud(400); }
+      if(this.cloudAgain){ this.cloudAgain=false; this.scheduleCloud(600); }
     }
   }
   async cloudConnect(){
     const k=(this.state.cloudInput||'').trim();
     if(k.length<6){ if(typeof alert==='function') alert('Il codice famiglia deve avere almeno 6 caratteri.'); return; }
+    const m=this.syncMeta(); m.init=false; this.saveMeta();
     const ok=await this.cloudSync(k);
     if(ok){ this.saveCloudKey(k); this.setState({cloudKey:k, cloudInput:''}); }
   }
   cloudDisconnect(){
     if(typeof confirm==='function' && !confirm('Scollegare questo telefono dal cloud? Le spese restano salvate sul telefono.')) return;
-    this.saveCloudKey(''); this.setState({cloudKey:'', cloudError:'', cloudOk:0});
+    this.saveCloudKey(''); const m=this.syncMeta(); m.init=false; m.rev=0; this.saveMeta();
+    this.setState({cloudKey:'', cloudError:'', cloudOk:0});
   }
 
   seedData(){
@@ -1174,10 +1206,10 @@ class Component extends DCLogic {
     const d=new Date(); this.applyRecurring(d.getFullYear()*12+d.getMonth(), true);
     this.scheduleCloud(50);
     if(typeof document!=='undefined'){
-      document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') this.scheduleCloud(50); });
+      document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') this.softSync(15000); });
     }
     if(typeof window!=='undefined'){ window.addEventListener('online',()=>this.scheduleCloud(50)); }
-    this.cloudInterval=setInterval(()=>{ if(typeof document==='undefined'||document.visibilityState==='visible') this.scheduleCloud(0); }, 45000);
+    this.cloudInterval=setInterval(()=>{ if(typeof document==='undefined'||document.visibilityState==='visible') this.softSync(80000); }, 90000);
   }
   toggleRecurring(rid){
     const recs=this.recurringList().map(r=>r.id===rid?{...r, active:r.active===false, u:Date.now()}:r);
